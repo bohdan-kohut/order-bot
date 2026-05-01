@@ -1,6 +1,6 @@
 import asyncio
-import re
 import os
+import re
 import requests
 
 from dotenv import load_dotenv
@@ -23,6 +23,7 @@ from database import (
     save_order,
     save_payment_info,
     get_orders,
+    get_user_orders,
     get_order_by_id,
     update_order_status,
     update_payment_status,
@@ -56,6 +57,8 @@ def is_valid_phone(phone: str) -> bool:
 def format_status(status: str) -> str:
     if status == "new":
         return "🆕 Нове"
+    if status == "in_progress":
+        return "🛠 В роботі"
     if status == "done":
         return "✅ Виконано"
     return status
@@ -75,20 +78,12 @@ def admin_order_keyboard(order_id: int):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(
-                    text="📦 Деталі",
-                    callback_data=f"order_{order_id}",
-                ),
-                InlineKeyboardButton(
-                    text="✅ Виконано",
-                    callback_data=f"done_{order_id}",
-                ),
+                InlineKeyboardButton(text="📦 Деталі", callback_data=f"order_{order_id}"),
+                InlineKeyboardButton(text="🛠 В роботі", callback_data=f"progress_{order_id}"),
             ],
             [
-                InlineKeyboardButton(
-                    text="💳 Оплачено вручну",
-                    callback_data=f"paid_{order_id}",
-                )
+                InlineKeyboardButton(text="✅ Виконано", callback_data=f"done_{order_id}"),
+                InlineKeyboardButton(text="💳 Оплачено", callback_data=f"paid_{order_id}"),
             ],
         ]
     )
@@ -97,12 +92,7 @@ def admin_order_keyboard(order_id: int):
 def payment_keyboard(payment_url: str):
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="💳 Оплатити замовлення",
-                    url=payment_url,
-                )
-            ]
+            [InlineKeyboardButton(text="💳 Оплатити замовлення", url=payment_url)]
         ]
     )
 
@@ -150,10 +140,7 @@ def create_mono_invoice(order_id: int, amount_uah: int):
             return None, None
 
         data = response.json()
-        invoice_id = data.get("invoiceId")
-        payment_url = data.get("pageUrl")
-
-        return invoice_id, payment_url
+        return data.get("invoiceId"), data.get("pageUrl")
 
     except Exception as e:
         print("Payment error:", e)
@@ -207,10 +194,32 @@ async def admin_handler(message: Message):
             f"💳 Оплата: {format_payment_status(payment_status)}"
         )
 
-        await message.answer(
-            text,
-            reply_markup=admin_order_keyboard(order_id),
+        await message.answer(text, reply_markup=admin_order_keyboard(order_id))
+
+
+@dp.message(F.text == "👤 Мої замовлення")
+async def my_orders_handler(message: Message):
+    orders = get_user_orders(message.from_user.id)
+
+    if not orders:
+        await message.answer("📭 У тебе ще немає замовлень.")
+        return
+
+    text = "👤 Твої останні замовлення:\n\n"
+
+    for order in orders:
+        order_id, name, phone, description, status, amount, payment_status = order
+
+        text += (
+            f"🆔 Замовлення #{order_id}\n"
+            f"📝 Опис: {description}\n"
+            f"💰 Сума: {amount} грн\n"
+            f"📌 Статус: {format_status(status)}\n"
+            f"💳 Оплата: {format_payment_status(payment_status)}\n"
+            f"----------------------\n"
         )
+
+    await message.answer(text)
 
 
 @dp.callback_query(F.data.startswith("order_"))
@@ -252,6 +261,45 @@ async def order_detail_callback(callback: CallbackQuery):
     await callback.answer()
 
 
+@dp.callback_query(F.data.startswith("progress_"))
+async def progress_order_callback(callback: CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔ Немає доступу")
+        return
+
+    order_id = int(callback.data.replace("progress_", ""))
+    order = get_order_by_id(order_id)
+
+    if not order:
+        await callback.answer("❌ Замовлення не знайдено")
+        return
+
+    (
+        order_id,
+        user_id,
+        name,
+        phone,
+        description,
+        status,
+        amount,
+        invoice_id,
+        payment_url,
+        payment_status,
+    ) = order
+
+    update_order_status(order_id, "in_progress")
+
+    await callback.message.answer(f"🛠 Замовлення #{order_id} взято в роботу.")
+
+    await bot.send_message(
+        user_id,
+        f"🛠 Ваше замовлення №{order_id} вже в роботі.\n"
+        "Ми повідомимо вас після виконання.",
+    )
+
+    await callback.answer("В роботі 🛠")
+
+
 @dp.callback_query(F.data.startswith("done_"))
 async def done_order_callback(callback: CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -284,9 +332,7 @@ async def done_order_callback(callback: CallbackQuery):
 
     update_order_status(order_id, "done")
 
-    await callback.message.answer(
-        f"✅ Замовлення #{order_id} позначено як виконане."
-    )
+    await callback.message.answer(f"✅ Замовлення #{order_id} позначено як виконане.")
 
     await bot.send_message(
         user_id,
@@ -326,9 +372,7 @@ async def paid_order_callback(callback: CallbackQuery):
         payment_status,
     ) = order
 
-    await callback.message.answer(
-        f"💳 Замовлення #{order_id} позначено як оплачене."
-    )
+    await callback.message.answer(f"💳 Замовлення #{order_id} позначено як оплачене.")
 
     await bot.send_message(
         user_id,
@@ -342,7 +386,14 @@ async def paid_order_callback(callback: CallbackQuery):
 @dp.message(F.text == "ℹ️ Про нас")
 async def about_handler(message: Message):
     await message.answer(
-        "Ми створюємо Telegram-ботів для бізнесу, каналів та автоматизації 🚀"
+        "🚀 Ми створюємо Telegram-ботів для бізнесу, каналів та автоматизації.\n\n"
+        "Можемо зробити:\n"
+        "• прийом замовлень\n"
+        "• заявки\n"
+        "• адмін-панель\n"
+        "• базу клієнтів\n"
+        "• оплату\n"
+        "• автоматизацію процесів"
     )
 
 

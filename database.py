@@ -58,20 +58,6 @@ def save_order(user_id, name, phone, description, amount):
     return order_id
 
 
-def save_payment_info(order_id, invoice_id, payment_url):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-
-    cursor.execute("""
-    UPDATE orders
-    SET invoice_id = ?, payment_url = ?
-    WHERE id = ?
-    """, (invoice_id, payment_url, order_id))
-
-    conn.commit()
-    conn.close()
-
-
 def get_orders():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -82,6 +68,24 @@ def get_orders():
     ORDER BY id DESC
     LIMIT 10
     """)
+
+    orders = cursor.fetchall()
+    conn.close()
+
+    return orders
+
+
+def get_user_orders(user_id):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT id, name, phone, description, status, amount, payment_status
+    FROM orders
+    WHERE user_id = ?
+    ORDER BY id DESC
+    LIMIT 10
+    """, (user_id,))
 
     orders = cursor.fetchall()
     conn.close()
@@ -128,6 +132,20 @@ def update_payment_status(order_id, payment_status):
     SET payment_status = ?
     WHERE id = ?
     """, (payment_status, order_id))
+
+    conn.commit()
+    conn.close()
+
+
+def save_payment_info(order_id, invoice_id, payment_url):
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    UPDATE orders
+    SET invoice_id = ?, payment_url = ?
+    WHERE id = ?
+    """, (invoice_id, payment_url, order_id))
 
     conn.commit()
     conn.close()
